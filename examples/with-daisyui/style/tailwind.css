@@ -1,3 +1,7 @@
 /* Tailwind CSS v4 + daisyUI v5 entry point */
 @import "tailwindcss";
 @plugin "daisyui";
+
+[data-nostr-icon-amber] {
+    color: #f97316;
+}
