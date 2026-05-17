@@ -1,0 +1,63 @@
+[package]
+name = "leptos-nostr-auth"
+version = "0.1.0"
+edition = "2021"
+description = "Headless Nostr authentication modal widget for Leptos"
+license = "MIT"
+keywords = ["nostr", "leptos", "wasm", "authentication", "login"]
+categories = ["wasm", "web-programming", "authentication"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# daisyUI 5 + Tailwind v4 styling with dark theme
+daisyui = []
+# Raw nsec/hex private key paste — XSS risk; must be explicitly opted in
+insecure_nsec_input = []
+
+[dependencies]
+# Leptos 0.8 CSR
+leptos     = { version = "0.8", features = ["csr"] }
+leptos-use = "0.16"
+
+# Nostr protocol: keys, events, NIP-19 bech32, NIP-49 ncryptsec
+nostr = { version = "0.44", default-features = false, features = ["std", "nip44", "nip49"] }
+
+# WASM bridge
+wasm-bindgen         = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys               = "0.3"
+
+# Web platform APIs (WebAuthn PRF, WebSocket, localStorage)
+web-sys = { version = "0.3", features = [
+  "Window",
+  "Navigator",
+  "console",
+  "CredentialsContainer",
+  "CredentialCreationOptions",
+  "CredentialRequestOptions",
+  "Crypto",
+  "WebSocket",
+  "MessageEvent",
+  "ErrorEvent",
+  "BinaryType",
+  "Location",
+]}
+
+# Serialization
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64             = { version = "0.22", features = ["alloc"] }
+
+# localStorage convenience (wraps web-sys Storage)
+gloo-storage = "0.3"
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+# Error types
+thiserror = "2"
+
+[dev-dependencies]
+console_error_panic_hook = "0.1"
+leptos = { version = "0.8", features = ["csr"] }

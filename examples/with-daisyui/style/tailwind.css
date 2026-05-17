@@ -1,0 +1,3 @@
+/* Tailwind CSS v4 + daisyUI v5 entry point */
+@import "tailwindcss";
+@plugin "daisyui";
