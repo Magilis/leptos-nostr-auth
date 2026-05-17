@@ -625,7 +625,6 @@ impl PasskeySession {
         let auth_sel = Object::new();
         set_str(&auth_sel, "authenticatorAttachment", "platform");
         set_str(&auth_sel, "residentKey", "required");
-        set_bool(&auth_sel, "requireResidentKey", true);
         set_str(&auth_sel, "userVerification", "required");
         set(&pk_opts, "authenticatorSelection", &auth_sel);
 
@@ -648,7 +647,8 @@ impl PasskeySession {
             .map_err(|e| NostrAuthError::PasskeyFailed(format!("{e:?}")))?;
 
         let credential = JsFuture::from(promise).await.map_err(|e| {
-            NostrAuthError::PasskeyFailed(e.as_string().unwrap_or_else(|| "create failed".into()))
+            web_sys::console::error_1(&e);
+            NostrAuthError::PasskeyFailed(js_err_msg(e))
         })?;
 
         Self::derive_from_credential(credential)
@@ -698,7 +698,8 @@ impl PasskeySession {
             .map_err(|e| NostrAuthError::PasskeyFailed(format!("{e:?}")))?;
 
         let credential = JsFuture::from(promise).await.map_err(|e| {
-            NostrAuthError::PasskeyFailed(e.as_string().unwrap_or_else(|| "get failed".into()))
+            web_sys::console::error_1(&e);
+            NostrAuthError::PasskeyFailed(js_err_msg(e))
         })?;
 
         Self::derive_from_credential(credential)
@@ -793,14 +794,24 @@ fn random_bytes(len: usize) -> Vec<u8> {
     buf
 }
 
+/// Extract a human-readable message from any JS error value.
+/// DOMException / Error objects expose a `.message` string property;
+/// plain string rejections are returned as-is.
+fn js_err_msg(e: JsValue) -> String {
+    e.as_string()
+        .or_else(|| {
+            Reflect::get(&e, &"message".into())
+                .ok()
+                .and_then(|v| v.as_string())
+        })
+        .unwrap_or_else(|| format!("{e:?}"))
+}
+
 fn set(obj: &Object, key: &str, val: &JsValue) {
     Reflect::set(obj, &key.into(), val).unwrap();
 }
 fn set_str(obj: &Object, key: &str, val: &str) {
     Reflect::set(obj, &key.into(), &JsValue::from_str(val)).unwrap();
-}
-fn set_bool(obj: &Object, key: &str, val: bool) {
-    Reflect::set(obj, &key.into(), &JsValue::from_bool(val)).unwrap();
 }
 
 // ─────────────────────────────────────────────
