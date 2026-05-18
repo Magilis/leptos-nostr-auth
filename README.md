@@ -414,7 +414,3 @@ Without the `daisyui` feature, all elements emit `data-nostr-*` attributes for s
 [data-nostr-back]            { /* back button */ }
 [data-nostr-close]           { /* close button */ }
 ```
-
-## License
-
-Apache 2.0
