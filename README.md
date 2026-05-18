@@ -47,18 +47,24 @@ fn App() -> impl IntoView {
 fn HomePage() -> impl IntoView {
     let auth = use_nostr_auth();
     view! {
+        // Show loading state while session restores on mount
+        <Show when=move || auth.is_restoring.get() fallback=|| ()>
+            <p>"Restoring session…"</p>
+        </Show>
+
         <Show
             when=move || auth.is_authenticated.get()
             fallback=move || view! {
-                <button on:click=move |_| auth.show_login.run(())>
-                    "Login with Nostr"
-                </button>
+                // Hide login button while restoring to avoid a flash of unauthenticated content
+                <Show when=move || !auth.is_restoring.get() fallback=|| ()>
+                    <button on:click=move |_| auth.show_login.run(())>
+                        "Login with Nostr"
+                    </button>
+                </Show>
             }
         >
-            <p>"Logged in as: " {move || auth.public_key.get()
-                .and_then(|pk| pk.to_bech32().ok())
-                .unwrap_or_default()}
-            </p>
+            <p>"Logged in as: " {move || auth.npub.get().unwrap_or_default()}</p>
+            <p>"via " {move || auth.auth.get().map(|a| a.method_name()).unwrap_or("")}</p>
             <button on:click=move |_| auth.logout.run(())>"Logout"</button>
         </Show>
     }
@@ -83,17 +89,8 @@ Enables daisyUI 5 + Tailwind v4 styling with a dark theme scoped to the modal.
    ```css
    @import "tailwindcss";
    @plugin "daisyui";
-   ```
-
-3. Add the library's WASM output to Tailwind's content paths so class names aren't purged:
-   ```js
-   // tailwind.config.js (if using config file)
-   export default {
-     content: [
-       "./src/**/*.rs",
-       "./pkg/**/*.js",   // compiled WASM JS glue
-     ],
-   };
+   @source "./src/**/*.rs";
+   @source "./pkg/**/*.js";
    ```
 
 ### `insecure_nsec_input` — raw secret key paste (opt-in only)
@@ -114,7 +111,7 @@ let config = NostrAuthConfig {
     persist_session: true,
 
     // localStorage key (default: "leptos_nostr_auth_session")
-    storage_key: "my_app_nostr_session",
+    storage_key: "my_app_nostr_session".to_string(),
 
     // Close modal on backdrop click (default: true)
     close_on_backdrop_click: true,
@@ -127,7 +124,7 @@ let config = NostrAuthConfig {
     rp_id: Some("myapp.com".into()),
 
     // WebAuthn relying party display name (default: "Nostr App")
-    rp_name: "My App",
+    rp_name: "My App".to_string(),
 
     // NIP-46 connection timeout in seconds (default: 30)
     bunker_timeout_secs: 30,
@@ -185,18 +182,57 @@ view! {
 
 ## Working with AuthResult
 
+### Public key and method name
+
+```rust
+let auth = use_nostr_auth();
+
+// Bech32 npub (or hex fallback) — no boilerplate needed
+let npub: Signal<Option<String>> = auth.npub;
+
+// Check auth method for display
+if let Some(result) = auth.auth.get() {
+    let method = result.method_name(); // "Browser Extension", "Passkey", etc.
+}
+```
+
+### Signing events
+
 ```rust
 use leptos_nostr_auth::AuthResult;
 
-let auth = use_nostr_auth();
+// Check if this session can sign (false only for Read-Only)
+if auth.auth.get().map(|a| a.can_sign()).unwrap_or(false) {
+    // Build an unsigned event with the nostr crate
+    if let Some(auth_result) = auth.auth.get() {
+        let pubkey = auth_result.public_key();
+        let unsigned = nostr::EventBuilder::new(nostr::Kind::TextNote, "Hello Nostr!")
+            .build(pubkey);
+        let event_json = unsigned.as_json();
 
-// Public key (always available)
-let pubkey: Signal<Option<nostr::PublicKey>> = auth.public_key;
+        // Unified async API — works for all signing methods
+        wasm_bindgen_futures::spawn_local(async move {
+            match auth_result.sign_event(&event_json).await {
+                Ok(signed_json) => { /* publish to relays */ }
+                Err(e) => { /* show error */ }
+            }
+        });
+    }
+}
+```
 
-// Sign an event (match on variant for signing capability)
-// Note: ReadOnly and Ncryptsec variants have different async characteristics.
-// Extension and Bunker variants can sign asynchronously via their handles.
-// Passkey and RawKey variants sign synchronously in-memory.
+### NIP-44 encryption
+
+```rust
+// NIP-07 extension
+if let AuthResult::Extension(handle) = &auth_result {
+    let ciphertext = handle.nip44_encrypt(recipient_hex, plaintext).await?;
+}
+
+// NIP-46 bunker — also supports nip44_encrypt / nip44_decrypt
+if let AuthResult::Bunker(session) = &auth_result {
+    let ciphertext = session.nip44_encrypt(recipient_hex, plaintext).await?;
+}
 ```
 
 ## Session Restore
@@ -211,10 +247,51 @@ When `persist_session: true` (default), successful logins are cached in localSto
 | Read-Only | Restores directly from stored hex pubkey |
 | ncryptsec | **Not persisted** — user must decrypt again (password not stored) |
 
+The `is_restoring` signal on [`NostrAuthContext`] is `true` while restore is in progress.
+Use it to suppress the login button flash:
+
+```rust
+// Don't show the login button during session restore
+<Show when=move || !auth.is_restoring.get() && !auth.is_authenticated.get()>
+    <button on:click=...>"Login"</button>
+</Show>
+```
+
 To disable persistence:
 
 ```rust
 NostrAuthConfig { persist_session: false, ..Default::default() }
+```
+
+## Context API
+
+```rust
+pub struct NostrAuthContext {
+    /// Current auth result; `None` when not logged in.
+    pub auth: Signal<Option<AuthResult>>,
+    /// Authenticated user's public key.
+    pub public_key: Signal<Option<nostr::PublicKey>>,
+    /// Authenticated user's npub (bech32) or hex pubkey as a `String`.
+    pub npub: Signal<Option<String>>,
+    /// `true` when logged in.
+    pub is_authenticated: Signal<bool>,
+    /// `true` while a persisted session is being restored from localStorage on mount.
+    pub is_restoring: Signal<bool>,
+    /// Open the login modal programmatically.
+    pub show_login: Callback<()>,
+    /// Log out and clear the stored session.
+    pub logout: Callback<()>,
+}
+```
+
+### `try_use_nostr_auth()`
+
+Non-panicking version of `use_nostr_auth()`. Returns `None` outside a `NostrAuthProvider`:
+
+```rust
+if let Some(auth) = try_use_nostr_auth() {
+    // inside a provider
+}
 ```
 
 ## Headless CSS Hooks

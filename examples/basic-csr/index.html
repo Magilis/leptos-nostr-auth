@@ -4,32 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nostr Auth — Basic</title>
+    <link data-trunk rel="css" href="style/brutalist.css" />
     <link data-trunk rel="rust" />
-    <style>
-        /* Structural only — no colors, no visual design. Style [data-nostr-*] yourself. */
-
-        [data-nostr-backdrop] {
-            position: fixed; inset: 0; z-index: 999;
-            display: flex; align-items: center; justify-content: center;
-        }
-        [data-nostr-modal] {
-            width: 100%; max-width: 380px; box-sizing: border-box;
-        }
-        [data-nostr-modal-header] {
-            display: flex; align-items: center; justify-content: space-between;
-        }
-        [data-nostr-method] {
-            display: flex; align-items: center; gap: .75rem; width: 100%;
-            cursor: pointer; text-align: left; box-sizing: border-box;
-        }
-        [data-nostr-method-title] { display: block; }
-        [data-nostr-method-subtitle] { display: block; }
-        [data-nostr-input] { width: 100%; box-sizing: border-box; }
-        [data-nostr-back], [data-nostr-close] {
-            display: flex; align-items: center; cursor: pointer;
-        }
-        [data-nostr-restoring] { position: fixed; bottom: 1rem; right: 1rem; }
-    </style>
 </head>
 <body>
     <!-- app mounts here via leptos::mount::mount_to_body -->

@@ -3,7 +3,7 @@
 
 use leptos::prelude::*;
 use leptos_nostr_auth::{use_nostr_auth, NostrAuthConfig, NostrAuthProvider};
-use nostr::ToBech32;
+use nostr::JsonUtil;
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -28,33 +28,85 @@ fn App() -> impl IntoView {
 #[component]
 fn HomePage() -> impl IntoView {
     let auth = use_nostr_auth();
+    let (sign_output, set_sign_output) = signal(String::new());
 
     view! {
-        <main style="font-family: sans-serif; max-width: 600px; margin: 4rem auto; padding: 1rem;">
+        <main class="page">
             <h1>"Nostr Auth — Basic Example"</h1>
+
+            // Show a loading indicator while restoring a persisted session
+            <Show when=move || auth.is_restoring.get() fallback=|| ()>
+                <p class="restoring">"Restoring session…"</p>
+            </Show>
 
             <Show
                 when=move || auth.is_authenticated.get()
                 fallback=move || view! {
-                    <p>"Not logged in."</p>
-                    <button
-                        style="padding: 0.5rem 1rem; cursor: pointer;"
-                        on:click=move |_| auth.show_login.run(())
-                    >
-                        "Login with Nostr"
-                    </button>
+                    // Only show Login button when we're not restoring (avoids button flash)
+                    <Show when=move || !auth.is_restoring.get() fallback=|| ()>
+                        <p>"Not logged in."</p>
+                        <button
+                            class="btn"
+                            on:click=move |_| auth.show_login.run(())
+                        >
+                            "Login with Nostr"
+                        </button>
+                    </Show>
                 }
             >
                 <p>
-                    "Logged in as: "
-                    <code>
-                        {move || auth.public_key.get()
-                            .map(|pk| pk.to_bech32().unwrap_or_else(|_| pk.to_hex()))
-                            .unwrap_or_default()}
+                    "Logged in via: "
+                    <strong>
+                        {move || auth.auth.get().map(|a| a.method_name()).unwrap_or("")}
+                    </strong>
+                </p>
+                <p>
+                    "Public key: "
+                    <code class="pubkey">
+                        {move || auth.npub.get().unwrap_or_default()}
                     </code>
                 </p>
+
+                // Signing demo — only available for non-read-only sessions
+                <Show
+                    when=move || auth.auth.get().map(|a| a.can_sign()).unwrap_or(false)
+                    fallback=|| view! { <p class="meta">"(Read-only — cannot sign)"</p> }
+                >
+                    <button
+                        class="btn"
+                        on:click=move |_| {
+                            if let Some(auth_result) = auth.auth.get() {
+                                let pubkey = auth_result.public_key();
+                                let unsigned = nostr::EventBuilder::new(
+                                    nostr::Kind::TextNote,
+                                    "Hello from leptos-nostr-auth!",
+                                )
+                                .build(pubkey);
+                                let event_json = unsigned.as_json();
+                                set_sign_output.set("Signing…".into());
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    match auth_result.sign_event(&event_json).await {
+                                        Ok(signed) => {
+                                            let preview = &signed[..signed.len().min(80)];
+                                            set_sign_output.set(format!("Signed: {preview}…"));
+                                        }
+                                        Err(e) => set_sign_output.set(format!("Error: {e}")),
+                                    }
+                                });
+                            }
+                        }
+                    >
+                        "Sign test event"
+                    </button>
+                    <Show when=move || !sign_output.get().is_empty() fallback=|| ()>
+                        <pre class="signed-output">
+                            {move || sign_output.get()}
+                        </pre>
+                    </Show>
+                </Show>
+
                 <button
-                    style="padding: 0.5rem 1rem; cursor: pointer;"
+                    class="btn btn-ghost"
                     on:click=move |_| auth.logout.run(())
                 >
                     "Logout"

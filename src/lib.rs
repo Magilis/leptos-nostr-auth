@@ -12,7 +12,7 @@
 //! let auth = use_nostr_auth();
 //! view! {
 //!     <Show when=move || auth.is_authenticated.get()>
-//!         <p>"Logged in as " {move || auth.public_key.get().map(|k| k.to_bech32())}</p>
+//!         <p>"Logged in as " {move || auth.npub.get().unwrap_or_default()}</p>
 //!     </Show>
 //!     <button on:click=move |_| auth.show_login.run(())>"Login"</button>
 //! }
@@ -25,12 +25,12 @@
 
 pub mod context;
 pub mod modal;
-pub mod platform;
 pub mod signers;
-pub mod storage;
+pub(crate) mod platform;
+pub(crate) mod storage;
 
 // Public re-exports
-pub use context::{use_nostr_auth, NostrAuthContext, NostrAuthProvider};
+pub use context::{try_use_nostr_auth, use_nostr_auth, NostrAuthContext, NostrAuthProvider};
 pub use modal::NostrAuthModal;
 
 // Core types
@@ -79,6 +79,46 @@ mod types {
             }
         }
 
+        /// Sign a Nostr event using whichever backend is active.
+        ///
+        /// All backends present a uniform async interface. Sync backends (Passkey, Ncryptsec)
+        /// return immediately without suspending. Read-only sessions return an error.
+        pub async fn sign_event(&self, event_json: &str) -> Result<String, NostrAuthError> {
+            match self {
+                AuthResult::Extension(h) => h.sign_event(event_json).await,
+                AuthResult::Bunker(s) => s.sign_event(event_json).await,
+                AuthResult::Passkey(s) => s.sign_event(event_json),
+                AuthResult::ReadOnly(_) => Err(NostrAuthError::SigningFailed(
+                    "Read-only session cannot sign events".into(),
+                )),
+                AuthResult::Ncryptsec(s) => s.sign_event(event_json),
+                #[cfg(feature = "insecure_nsec_input")]
+                AuthResult::RawNsec(s) => s.sign_event(event_json),
+            }
+        }
+
+        /// Returns `true` if this session can sign events.
+        ///
+        /// `false` only for `ReadOnly` sessions.
+        pub fn can_sign(&self) -> bool {
+            !matches!(self, AuthResult::ReadOnly(_))
+        }
+
+        /// Human-readable name of the authentication method.
+        ///
+        /// Useful for display: "Logged in via Browser Extension".
+        pub fn method_name(&self) -> &'static str {
+            match self {
+                AuthResult::Extension(_) => "Browser Extension",
+                AuthResult::Bunker(_) => "Nostr Connect",
+                AuthResult::Passkey(_) => "Passkey",
+                AuthResult::ReadOnly(_) => "Read-Only",
+                AuthResult::Ncryptsec(_) => "Encrypted Key",
+                #[cfg(feature = "insecure_nsec_input")]
+                AuthResult::RawNsec(_) => "Secret Key",
+            }
+        }
+
         /// Build a `PersistedSession` for localStorage (never stores private key bytes).
         pub fn to_persisted_session(&self) -> Option<PersistedSession> {
             match self {
@@ -118,7 +158,7 @@ mod types {
     }
 
     /// What gets written to localStorage — never contains private key material.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct PersistedSession {
         pub public_key_hex: String,
         pub method: PersistedMethod,
@@ -128,7 +168,7 @@ mod types {
         pub passkey_credential_id: Option<String>,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub enum PersistedMethod {
         Extension,
         Bunker,
@@ -160,6 +200,19 @@ mod types {
                 LoginMethod::RawNsec,
             ]
         }
+
+        /// Human-readable name for this login method.
+        pub fn name(&self) -> &'static str {
+            match self {
+                LoginMethod::Extension => "Browser Extension",
+                LoginMethod::Bunker => "Nostr Connect",
+                LoginMethod::Passkey => "Passkey",
+                LoginMethod::ReadOnly => "Read-Only",
+                LoginMethod::Ncryptsec => "Encrypted Key",
+                #[cfg(feature = "insecure_nsec_input")]
+                LoginMethod::RawNsec => "Secret Key",
+            }
+        }
     }
 
     /// Configuration for [`NostrAuthModal`] and [`NostrAuthProvider`].
@@ -168,7 +221,7 @@ mod types {
         /// Persist session to localStorage after login (default: `true`)
         pub persist_session: bool,
         /// localStorage key (default: `"leptos_nostr_auth_session"`)
-        pub storage_key: &'static str,
+        pub storage_key: String,
         /// Close modal on backdrop click (default: `true`)
         pub close_on_backdrop_click: bool,
         /// Close modal on Escape key (default: `true`)
@@ -183,20 +236,20 @@ mod types {
         /// Set this to your domain, e.g. `"myapp.com"` (no `https://` prefix).
         pub rp_id: Option<String>,
         /// WebAuthn relying party display name (default: `"Nostr App"`)
-        pub rp_name: &'static str,
+        pub rp_name: String,
     }
 
     impl Default for NostrAuthConfig {
         fn default() -> Self {
             Self {
                 persist_session: true,
-                storage_key: "leptos_nostr_auth_session",
+                storage_key: "leptos_nostr_auth_session".to_string(),
                 close_on_backdrop_click: true,
                 close_on_escape: true,
                 allowed_methods: LoginMethod::all(),
                 bunker_timeout_secs: 30,
                 rp_id: None,
-                rp_name: "Nostr App",
+                rp_name: "Nostr App".to_string(),
             }
         }
     }

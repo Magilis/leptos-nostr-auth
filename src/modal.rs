@@ -1,12 +1,17 @@
 use leptos::portal::Portal;
 use leptos::prelude::*;
 use leptos_use::{use_event_listener, use_window};
+
+#[cfg(not(feature = "ssr"))]
 use wasm_bindgen_futures::spawn_local;
 
 use crate::platform::Platform;
-use crate::signers::{
-    AuthResult, BunkerSession, Nip07Handle, PasskeySession, RawKeySession, ReadOnlyHandle,
-};
+#[cfg(not(feature = "ssr"))]
+use crate::signers::{BunkerSession, Nip07Handle, PasskeySession};
+// RawKeySession: used in spawn_local (non-ssr) and in StepRawNsec sync code (insecure_nsec_input)
+#[cfg(any(not(feature = "ssr"), feature = "insecure_nsec_input"))]
+use crate::signers::RawKeySession;
+use crate::signers::{AuthResult, ReadOnlyHandle};
 use crate::types::{LoginMethod, NostrAuthConfig};
 
 #[derive(Clone, PartialEq)]
@@ -74,7 +79,15 @@ pub fn NostrAuthModal(
     config: Option<NostrAuthConfig>,
 ) -> impl IntoView {
     let config = StoredValue::new(config.unwrap_or_default());
-    let platform = StoredValue::new(Platform::detect());
+
+    // Starts as server_default (all methods visible, no platform bias) → Effect
+    // updates to real browser capabilities after hydration so the UI narrows reactively.
+    // Effects don't run on the server, so SSR always renders the full method list.
+    let (platform, set_platform) = signal(Platform::server_default());
+    Effect::new(move |_| {
+        set_platform.set(Platform::detect());
+    });
+
     let (step, set_step) = signal(ModalStep::MethodSelect);
     let (error, set_error) = signal(Option::<String>::None);
 
@@ -131,7 +144,7 @@ pub fn NostrAuthModal(
                             {move || match step.get() {
                                 ModalStep::MethodSelect => view! {
                                     <StepMethodSelect
-                                        platform=platform.get_value()
+                                        platform=platform
                                         config=config.get_value()
                                         set_step=set_step
                                     />
@@ -147,7 +160,7 @@ pub fn NostrAuthModal(
                                     <StepBunker
                                         on_auth=on_auth
                                         set_error=set_error
-                                        platform=platform.get_value()
+                                        platform=platform
                                         config=config.get_value()
                                     />
                                 }.into_any(),
@@ -256,31 +269,31 @@ fn ModalHeader(
 
 #[component]
 fn StepMethodSelect(
-    platform: Platform,
+    platform: ReadSignal<Platform>,
     config: NostrAuthConfig,
     set_step: WriteSignal<ModalStep>,
 ) -> impl IntoView {
     let methods = config.allowed_methods.clone();
     let has = |m: &LoginMethod| methods.contains(m);
 
-    // Build the ordered method list based on platform
-    let show_passkey = platform.supports_webauthn && has(&LoginMethod::Passkey);
-    let show_extension = platform.has_nostr_extension && has(&LoginMethod::Extension);
+    let passkey_allowed = has(&LoginMethod::Passkey);
+    let extension_allowed = has(&LoginMethod::Extension);
     let show_bunker = has(&LoginMethod::Bunker);
     let show_readonly = has(&LoginMethod::ReadOnly);
     let show_ncryptsec = has(&LoginMethod::Ncryptsec);
-    // Always define show_nsec using separate cfg blocks so LoginMethod::RawNsec
-    // is never referenced in a cfg-off build
     #[cfg(feature = "insecure_nsec_input")]
     let show_nsec = has(&LoginMethod::RawNsec);
     #[cfg(not(feature = "insecure_nsec_input"))]
     let show_nsec = false;
 
+    // Reactive closures: re-evaluate when platform signal changes after hydration
+    let show_passkey = move || platform.get().supports_webauthn && passkey_allowed;
+
     view! {
         <div data-nostr-methods="" class=if cfg!(feature = "daisyui") { "flex flex-col gap-2" } else { "" }>
 
             // ── Apple: passkey first ──────────────────────────────────────────
-            <Show when=move || platform.is_apple && show_passkey fallback=|| ()>
+            <Show when=move || platform.get().is_apple && show_passkey() fallback=|| ()>
                 <MethodButton
                     icon=icon_passkey
                     title="Passkey"
@@ -290,19 +303,31 @@ fn StepMethodSelect(
                 />
             </Show>
 
-            // ── Browser Extension ─────────────────────────────────────────────
-            <Show when=move || show_extension fallback=|| ()>
+            // ── Extension: non-Apple (badge = Recommended) ───────────────────
+            // Two separate Shows so the badge value is stable per variant.
+            <Show when=move || { let p = platform.get(); !p.is_apple && p.has_nostr_extension && extension_allowed } fallback=|| ()>
                 <MethodButton
                     icon=icon_extension
                     title="Browser Extension"
                     subtitle="Alby, nos2x, Nostr KeyX, and more"
-                    badge=if platform.is_apple { None } else { Some("Recommended") }
+                    badge=Some("Recommended")
+                    on_click=move || set_step.set(ModalStep::Extension)
+                />
+            </Show>
+
+            // ── Extension: Apple (no badge) ───────────────────────────────────
+            <Show when=move || { let p = platform.get(); p.is_apple && p.has_nostr_extension && extension_allowed } fallback=|| ()>
+                <MethodButton
+                    icon=icon_extension
+                    title="Browser Extension"
+                    subtitle="Alby, nos2x, Nostr KeyX, and more"
+                    badge=None
                     on_click=move || set_step.set(ModalStep::Extension)
                 />
             </Show>
 
             // ── Android: Amber hint before generic bunker ─────────────────────
-            <Show when=move || platform.is_android && show_bunker fallback=|| ()>
+            <Show when=move || platform.get().is_android && show_bunker fallback=|| ()>
                 <MethodButton
                     icon=icon_amber
                     title="Amber"
@@ -324,7 +349,7 @@ fn StepMethodSelect(
             </Show>
 
             // ── Non-Apple: passkey after bunker ───────────────────────────────
-            <Show when=move || !platform.is_apple && show_passkey fallback=|| ()>
+            <Show when=move || !platform.get().is_apple && show_passkey() fallback=|| ()>
                 <MethodButton
                     icon=icon_passkey
                     title="Passkey"
@@ -482,9 +507,14 @@ fn StepExtension(
     let (loading, set_loading) = signal(true);
     let (done, set_done) = signal(false);
 
-    // Trigger extension login immediately on mount
-    Effect::new(move |_| {
+    #[cfg(feature = "ssr")]
+    let _ = (on_auth, set_done);
+
+    // Shared login attempt — called from both the mount Effect and the "Try again" button.
+    let attempt = move || {
+        set_error.set(None);
         set_loading.set(true);
+        #[cfg(not(feature = "ssr"))]
         spawn_local(async move {
             match Nip07Handle::get_public_key().await {
                 Ok(handle) => {
@@ -498,7 +528,12 @@ fn StepExtension(
                 }
             }
         });
-    });
+        #[cfg(feature = "ssr")]
+        set_loading.set(false);
+    };
+
+    // Trigger extension login immediately on mount
+    Effect::new(move |_| attempt());
 
     view! {
         <div data-nostr-step="extension" class=if cfg!(feature = "daisyui") { "flex flex-col items-center gap-4 py-4" } else { "" }>
@@ -515,23 +550,7 @@ fn StepExtension(
             <Show when=move || !loading.get() && !done.get() fallback=|| ()>
                 <button
                     class=if cfg!(feature = "daisyui") { "btn btn-primary" } else { "" }
-                    on:click=move |_| {
-                        set_error.set(None);
-                        set_loading.set(true);
-                        spawn_local(async move {
-                            match Nip07Handle::get_public_key().await {
-                                Ok(handle) => {
-                                    set_done.set(true);
-                                    set_loading.set(false);
-                                    on_auth.run(AuthResult::Extension(handle));
-                                }
-                                Err(e) => {
-                                    set_error.set(Some(e.to_string()));
-                                    set_loading.set(false);
-                                }
-                            }
-                        });
-                    }
+                    on:click=move |_| attempt()
                 >
                     "Try again"
                 </button>
@@ -552,12 +571,15 @@ fn StepExtension(
 fn StepBunker(
     on_auth: Callback<AuthResult>,
     set_error: WriteSignal<Option<String>>,
-    platform: Platform,
+    platform: ReadSignal<Platform>,
     config: NostrAuthConfig,
 ) -> impl IntoView {
     let (uri, set_uri) = signal(String::new());
     let (loading, set_loading) = signal(false);
     let timeout = config.bunker_timeout_secs;
+
+    #[cfg(feature = "ssr")]
+    let _ = (on_auth, timeout);
 
     let connect = move || {
         let uri_val = uri.get();
@@ -567,6 +589,7 @@ fn StepBunker(
         }
         set_error.set(None);
         set_loading.set(true);
+        #[cfg(not(feature = "ssr"))]
         spawn_local(async move {
             match BunkerSession::connect(&uri_val, timeout).await {
                 Ok(session) => {
@@ -579,6 +602,8 @@ fn StepBunker(
                 }
             }
         });
+        #[cfg(feature = "ssr")]
+        set_loading.set(false);
     };
 
     view! {
@@ -592,7 +617,7 @@ fn StepBunker(
             </p>
 
             // Amber tip — Android only
-            <Show when=move || platform.is_android fallback=|| ()>
+            <Show when=move || platform.get().is_android fallback=|| ()>
                 <div
                     data-nostr-tip=""
                     class=if cfg!(feature = "daisyui") { "alert text-sm py-2" } else { "" }
@@ -639,9 +664,12 @@ fn StepPasskey(
     config: NostrAuthConfig,
 ) -> impl IntoView {
     let (sub_step, set_sub_step) = signal(PasskeySubStep::Choose);
-    // Store rp_id in a StoredValue so it's Copy-accessible inside the on:click closures
+    // Store both in StoredValue so they're Copy-accessible across multiple Fn closures
     let rp_id = StoredValue::new(config.rp_id.clone());
-    let rp_name = config.rp_name;
+    let rp_name = StoredValue::new(config.rp_name.clone());
+
+    #[cfg(feature = "ssr")]
+    let _ = (on_auth, rp_id, rp_name);
 
     view! {
         <div data-nostr-step="passkey" class=if cfg!(feature = "daisyui") { "flex flex-col gap-3" } else { "" }>
@@ -667,22 +695,28 @@ fn StepPasskey(
                     on:click=move |_| {
                         set_sub_step.set(PasskeySubStep::Loading);
                         set_error.set(None);
-                        let rp = rp_id.get_value().clone().unwrap_or_else(|| {
-                            web_sys::window()
-                                .and_then(|w| w.location().hostname().ok())
-                                .unwrap_or_else(|| "localhost".into())
-                        });
-                        spawn_local(async move {
-                            match PasskeySession::create(&rp, rp_name).await {
-                                Ok(session) => {
-                                    on_auth.run(AuthResult::Passkey(session));
+                        #[cfg(not(feature = "ssr"))]
+                        {
+                            let rp = rp_id.get_value().clone().unwrap_or_else(|| {
+                                web_sys::window()
+                                    .and_then(|w| w.location().hostname().ok())
+                                    .unwrap_or_else(|| "localhost".into())
+                            });
+                            let rp_name_val = rp_name.get_value();
+                            spawn_local(async move {
+                                match PasskeySession::create(&rp, &rp_name_val).await {
+                                    Ok(session) => {
+                                        on_auth.run(AuthResult::Passkey(session));
+                                    }
+                                    Err(e) => {
+                                        set_error.set(Some(e.to_string()));
+                                        set_sub_step.set(PasskeySubStep::Choose);
+                                    }
                                 }
-                                Err(e) => {
-                                    set_error.set(Some(e.to_string()));
-                                    set_sub_step.set(PasskeySubStep::Choose);
-                                }
-                            }
-                        });
+                            });
+                        }
+                        #[cfg(feature = "ssr")]
+                        set_sub_step.set(PasskeySubStep::Choose);
                     }
                 >
                     "Create new Nostr identity"
@@ -693,6 +727,7 @@ fn StepPasskey(
                     on:click=move |_| {
                         set_sub_step.set(PasskeySubStep::Loading);
                         set_error.set(None);
+                        #[cfg(not(feature = "ssr"))]
                         spawn_local(async move {
                             // Empty credential ID → browser presents all stored passkeys
                             match PasskeySession::authenticate(vec![]).await {
@@ -705,6 +740,8 @@ fn StepPasskey(
                                 }
                             }
                         });
+                        #[cfg(feature = "ssr")]
+                        set_sub_step.set(PasskeySubStep::Choose);
                     }
                 >
                     "I already have a Nostr passkey — restore it"
@@ -777,6 +814,9 @@ fn StepNcryptsec(
     let (password, set_password) = signal(String::new());
     let (loading, set_loading) = signal(false);
 
+    #[cfg(feature = "ssr")]
+    let _ = on_auth;
+
     let decrypt = move || {
         let nc = ncryptsec.get();
         let pw = password.get();
@@ -791,9 +831,16 @@ fn StepNcryptsec(
         set_error.set(None);
         set_loading.set(true);
         // scrypt is CPU-intensive — run in spawn_local so the spinner renders first
+        #[cfg(not(feature = "ssr"))]
         spawn_local(async move {
-            // Small yield to ensure spinner renders before blocking computation
-            gloo_timers::future::TimeoutFuture::new(16).await;
+            // Yield one frame so the spinner renders before scrypt blocks the thread.
+            let promise = js_sys::Promise::new(&mut |resolve, _| {
+                let _ = web_sys::window()
+                    .unwrap()
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 16);
+            });
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+
             match RawKeySession::from_ncryptsec(&nc, &pw) {
                 Ok(session) => {
                     set_loading.set(false);
@@ -805,6 +852,8 @@ fn StepNcryptsec(
                 }
             }
         });
+        #[cfg(feature = "ssr")]
+        set_loading.set(false);
     };
 
     view! {
