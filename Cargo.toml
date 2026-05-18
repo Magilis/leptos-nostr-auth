@@ -35,7 +35,7 @@ csr = [
 leptos     = { version = "0.8", default-features = false }
 
 # use_event_listener + use_window (Escape key) + use_storage (SSR-safe localStorage)
-leptos-use = { version = "0.16", default-features = false, features = [
+leptos-use = { version = "0.18", default-features = false, features = [
     "use_event_listener",
     "use_window",
     "storage",
