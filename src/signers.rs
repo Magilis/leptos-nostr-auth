@@ -597,8 +597,9 @@ fn setup_persistent_message_handler(
         if event_obj["kind"].as_u64() != Some(24133) {
             return;
         }
-        if event_obj["pubkey"].as_str().unwrap_or_default() != remote_hex {
-            return;
+        match event_obj["pubkey"].as_str() {
+            Some(pk) if pk == remote_hex => {}
+            _ => return,
         }
         let ciphertext = match event_obj["content"].as_str() {
             Some(s) => s.to_string(),
@@ -696,7 +697,7 @@ async fn websocket_connect_handshake(
 
     if pk_hex == "ack" || pk_hex.is_empty() {
         // Some bunkers ack without returning the pubkey — do a get_public_key call
-        return get_bunker_public_key(relay_url, client_pubkey_hex, remote_pubkey_hex, client_keys)
+        return get_bunker_public_key(relay_url, client_pubkey_hex, remote_pubkey_hex, client_keys, timeout_secs)
             .await;
     }
 
@@ -710,6 +711,7 @@ async fn get_bunker_public_key(
     client_pubkey_hex: &str,
     remote_pubkey_hex: &str,
     client_keys: &Keys,
+    timeout_secs: u32,
 ) -> Result<PublicKey, NostrAuthError> {
     let req_id = generate_request_id();
     let req = serde_json::json!({"id": req_id, "method": "get_public_key", "params": []});
@@ -739,7 +741,7 @@ async fn get_bunker_public_key(
         remote_pubkey_hex,
         client_keys,
         &req_id,
-        15,
+        timeout_secs,
     )
     .await?;
 
@@ -1088,8 +1090,10 @@ impl PasskeySession {
 
         let prf_bytes = Uint8Array::new(&first).to_vec();
 
-        if prf_bytes.len() < 32 {
-            return Err(NostrAuthError::PasskeyFailed("PRF output too short".into()));
+        if prf_bytes.len() != 32 {
+            return Err(NostrAuthError::PasskeyFailed(
+                format!("PRF output must be 32 bytes, got {}", prf_bytes.len()).into(),
+            ));
         }
 
         // SHA-256 of the PRF output → secp256k1 private key (deterministic, Roadflare pattern)
