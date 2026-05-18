@@ -18,12 +18,12 @@ Drop-in login modal supporting every Nostr authentication method. Headless by de
 
 Passkeys use the WebAuthn PRF extension with a fixed salt (`"nostr-key-v1"`) to deterministically derive the same secp256k1 key from the same passkey on any device. On Apple devices, passkeys sync silently via iCloud Keychain — no passwords, no clipboard.
 
-## Quick Start
+## Quick Start (CSR)
 
 ```toml
 # Cargo.toml
 [dependencies]
-leptos-nostr-auth = "0.1"
+leptos-nostr-auth = { version = "0.1", features = ["csr"] }
 ```
 
 ```rust
@@ -71,12 +71,38 @@ fn HomePage() -> impl IntoView {
 }
 ```
 
+## SSR / cargo-leptos Setup
+
+For server-side rendering with Axum and cargo-leptos, select rendering features per build target:
+
+```toml
+# Cargo.toml (cargo-leptos workspace member)
+[dependencies]
+leptos-nostr-auth = { version = "0.1", optional = true }
+
+[features]
+hydrate = ["leptos-nostr-auth/hydrate", ...]
+ssr    = ["leptos-nostr-auth/ssr", ...]
+```
+
+The library is SSR-safe: all browser-only code is `cfg`-gated so no `window` or `crypto` access occurs on the server. Session restore is a no-op on the server; it runs only after hydration in the browser.
+
+See the `with-axum-ssr` and `with-axum-daisyui` examples for complete cargo-leptos project layouts.
+
 ## Feature Flags
+
+You must select exactly one rendering mode feature:
+
+| Feature | Use when |
+|---|---|
+| `csr` | Client-side rendering only (Trunk) |
+| `hydrate` | Browser WASM target in SSR+hydrate setup |
+| `ssr` | Server binary target in SSR+hydrate setup |
 
 ### `daisyui` — pre-styled dark theme
 
 ```toml
-leptos-nostr-auth = { version = "0.1", features = ["daisyui"] }
+leptos-nostr-auth = { version = "0.1", features = ["csr", "daisyui"] }
 ```
 
 Enables daisyUI 5 + Tailwind v4 styling with a dark theme scoped to the modal.
@@ -96,7 +122,7 @@ Enables daisyUI 5 + Tailwind v4 styling with a dark theme scoped to the modal.
 ### `insecure_nsec_input` — raw secret key paste (opt-in only)
 
 ```toml
-leptos-nostr-auth = { version = "0.1", features = ["insecure_nsec_input"] }
+leptos-nostr-auth = { version = "0.1", features = ["csr", "insecure_nsec_input"] }
 ```
 
 Shows a raw `nsec1...` / hex private key input behind a two-click security warning. **Not recommended** for production — any XSS on the page can steal the key. Use a browser extension, passkey, or ncryptsec instead.
@@ -104,7 +130,7 @@ Shows a raw `nsec1...` / hex private key input behind a two-click security warni
 ## Configuration
 
 ```rust
-use leptos_nostr_auth::NostrAuthConfig;
+use leptos_nostr_auth::{NostrAuthConfig, LoginMethod};
 
 let config = NostrAuthConfig {
     // Persist session to localStorage (default: true)
@@ -128,6 +154,15 @@ let config = NostrAuthConfig {
 
     // NIP-46 connection timeout in seconds (default: 30)
     bunker_timeout_secs: 30,
+
+    // Restrict which methods appear in the modal (default: all)
+    allowed_methods: vec![
+        LoginMethod::Extension,
+        LoginMethod::Bunker,
+        LoginMethod::Passkey,
+        LoginMethod::ReadOnly,
+        LoginMethod::Ncryptsec,
+    ],
 
     ..Default::default()
 };
@@ -162,6 +197,19 @@ Passkeys created on `myapp.com` only work on `myapp.com`. On localhost for devel
 
 Same passkey on any device → same Nostr identity. Syncs automatically via iCloud Keychain on Apple, Google Password Manager on Android, Windows Hello on Windows.
 
+## Examples
+
+Four runnable examples are included in the `examples/` directory:
+
+| Example | Rendering | Styling | Run |
+|---|---|---|---|
+| `basic-csr` | CSR (Trunk) | Headless (`data-nostr-*`) | `trunk serve` |
+| `with-daisyui` | CSR (Trunk) | daisyUI 5 + dark theme | `trunk serve` |
+| `with-axum-ssr` | SSR + Hydrate (cargo-leptos) | Headless | `cargo leptos serve` |
+| `with-axum-daisyui` | SSR + Hydrate (cargo-leptos) | daisyUI 5 + dark theme | `cargo leptos serve` |
+
+All examples demonstrate: login button, session restore indicator, sign event button, logout.
+
 ## Raw Modal (without context provider)
 
 ```rust
@@ -172,7 +220,7 @@ view! {
     <NostrAuthModal
         open=show.into()
         on_auth=move |result| {
-            // result: AuthResult::Extension | Bunker | Passkey | ReadOnly | Ncryptsec
+            // result: AuthResult::Extension | Bunker | Passkey | ReadOnly | Ncryptsec | RawNsec
             let pubkey = result.public_key();
         }
         on_close=move |_| set_show(false)
@@ -181,6 +229,17 @@ view! {
 ```
 
 ## Working with AuthResult
+
+### AuthResult variants
+
+| Variant | Signing | Notes |
+|---|---|---|
+| `Extension(Nip07Handle)` | Yes | NIP-07 browser extension |
+| `Bunker(BunkerSession)` | Yes | NIP-46 remote signer / Nostr Connect |
+| `Passkey(PasskeySession)` | Yes | WebAuthn PRF-derived key, biometric |
+| `ReadOnly(ReadOnlyHandle)` | No | Public key only |
+| `Ncryptsec(RawKeySession)` | Yes | NIP-49 password-decrypted, in-memory |
+| `RawNsec(RawKeySession)` | Yes | Raw nsec paste (`insecure_nsec_input` only) |
 
 ### Public key and method name
 
@@ -203,7 +262,6 @@ use leptos_nostr_auth::AuthResult;
 
 // Check if this session can sign (false only for Read-Only)
 if auth.auth.get().map(|a| a.can_sign()).unwrap_or(false) {
-    // Build an unsigned event with the nostr crate
     if let Some(auth_result) = auth.auth.get() {
         let pubkey = auth_result.public_key();
         let unsigned = nostr::EventBuilder::new(nostr::Kind::TextNote, "Hello Nostr!")
@@ -227,6 +285,7 @@ if auth.auth.get().map(|a| a.can_sign()).unwrap_or(false) {
 // NIP-07 extension
 if let AuthResult::Extension(handle) = &auth_result {
     let ciphertext = handle.nip44_encrypt(recipient_hex, plaintext).await?;
+    let plaintext  = handle.nip44_decrypt(sender_hex, ciphertext).await?;
 }
 
 // NIP-46 bunker — also supports nip44_encrypt / nip44_decrypt
@@ -237,7 +296,7 @@ if let AuthResult::Bunker(session) = &auth_result {
 
 ## Session Restore
 
-When `persist_session: true` (default), successful logins are cached in localStorage:
+When `persist_session: true` (default), successful logins are cached in localStorage. **Private keys are never persisted.**
 
 | Method | Restore behavior |
 |---|---|
@@ -246,8 +305,9 @@ When `persist_session: true` (default), successful logins are cached in localSto
 | Passkey | Calls `navigator.credentials.get()` → biometric → re-derives same key |
 | Read-Only | Restores directly from stored hex pubkey |
 | ncryptsec | **Not persisted** — user must decrypt again (password not stored) |
+| Raw nsec | **Not persisted** — user must paste again |
 
-The `is_restoring` signal on [`NostrAuthContext`] is `true` while restore is in progress.
+The `is_restoring` signal on `NostrAuthContext` is `true` while restore is in progress.
 Use it to suppress the login button flash:
 
 ```rust
@@ -284,13 +344,54 @@ pub struct NostrAuthContext {
 }
 ```
 
+### `use_nostr_auth()`
+
+Returns `NostrAuthContext`. Panics if called outside a `NostrAuthProvider`.
+
 ### `try_use_nostr_auth()`
 
-Non-panicking version of `use_nostr_auth()`. Returns `None` outside a `NostrAuthProvider`:
+Non-panicking variant. Returns `None` outside a `NostrAuthProvider`:
 
 ```rust
 if let Some(auth) = try_use_nostr_auth() {
     // inside a provider
+}
+```
+
+## Error Types
+
+All fallible operations return `NostrAuthError`:
+
+```rust
+pub enum NostrAuthError {
+    // NIP-07 extension
+    ExtensionNotFound,
+    ExtensionRejected(String),
+
+    // Keys / public key parsing
+    InvalidPublicKey(String),
+
+    // NIP-46 bunker
+    InvalidBunkerUri(String),
+    BunkerConnectionFailed(String),
+    BunkerTimeout,
+
+    // WebAuthn passkey
+    PasskeyFailed(String),
+    PasskeyNotSupported,
+
+    // NIP-49 ncryptsec
+    InvalidNcryptsec(String),
+    WrongPassword,
+
+    // Raw nsec (insecure_nsec_input feature)
+    InvalidSecretKey(String),
+
+    // Signing
+    SigningFailed(String),
+
+    // Internal serialization
+    Serialization(String),
 }
 ```
 
@@ -299,21 +400,21 @@ if let Some(auth) = try_use_nostr_auth() {
 Without the `daisyui` feature, all elements emit `data-nostr-*` attributes for styling:
 
 ```css
-[data-nostr-backdrop] { /* modal overlay */ }
-[data-nostr-modal] { /* modal box */ }
-[data-nostr-modal-title] { /* "Connect to Nostr" heading */ }
-[data-nostr-method] { /* login method button */ }
-[data-nostr-method-icon] { /* method icon wrapper */ }
-[data-nostr-method-title] { /* method name */ }
+[data-nostr-backdrop]        { /* modal overlay */ }
+[data-nostr-modal]           { /* modal box */ }
+[data-nostr-modal-title]     { /* "Connect to Nostr" heading */ }
+[data-nostr-method]          { /* login method button */ }
+[data-nostr-method-icon]     { /* method icon wrapper */ }
+[data-nostr-method-title]    { /* method name */ }
 [data-nostr-method-subtitle] { /* method description */ }
-[data-nostr-badge] { /* "Recommended" badge */ }
-[data-nostr-error] { /* error message */ }
-[data-nostr-warning] { /* security warning */ }
-[data-nostr-input] { /* text inputs */ }
-[data-nostr-back] { /* back button */ }
-[data-nostr-close] { /* close button */ }
+[data-nostr-badge]           { /* "Recommended" badge */ }
+[data-nostr-error]           { /* error message */ }
+[data-nostr-warning]         { /* security warning */ }
+[data-nostr-input]           { /* text inputs */ }
+[data-nostr-back]            { /* back button */ }
+[data-nostr-close]           { /* close button */ }
 ```
 
 ## License
 
-MIT
+Apache 2.0
