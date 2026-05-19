@@ -1,3 +1,5 @@
+// #[component] generates exhaustive props structs we cannot control.
+#![allow(clippy::exhaustive_structs)]
 use leptos::prelude::*;
 use leptos_nostr_auth::{use_nostr_auth, NostrAuthConfig, NostrAuthProvider};
 
@@ -20,7 +22,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <title>"Nostr Auth — Axum SSR Example"</title>
-                <HydrationScripts options=options.clone()/>
+                <HydrationScripts options/>
                 <link rel="stylesheet" href="/pkg/with-axum-ssr.css"/>
             </head>
             <body>
@@ -79,7 +81,7 @@ fn HomePage() -> impl IntoView {
                 <p>
                     "Logged in via: "
                     <strong>
-                        {move || auth.auth.get().map(|a| a.method_name()).unwrap_or("")}
+                        {move || auth.auth.get().map_or("", |a| a.method_name())}
                     </strong>
                 </p>
                 <p>

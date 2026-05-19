@@ -1,4 +1,6 @@
 use nostr::{FromBech32, Keys, PublicKey, SecretKey};
+#[cfg(not(feature = "ssr"))]
+use core::fmt::Write;
 
 use crate::types::NostrAuthError;
 
@@ -7,19 +9,19 @@ pub use crate::types::AuthResult;
 
 // WASM-only imports: js_sys/web_sys APIs, wasm_bindgen FFI, async futures
 #[cfg(not(feature = "ssr"))]
+use base64::Engine as _;
+#[cfg(not(feature = "ssr"))]
+use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
+#[cfg(not(feature = "ssr"))]
+use nostr::JsonUtil;
+#[cfg(not(feature = "ssr"))]
+use send_wrapper::SendWrapper;
+#[cfg(not(feature = "ssr"))]
 use std::cell::RefCell;
 #[cfg(not(feature = "ssr"))]
 use std::collections::HashMap;
 #[cfg(not(feature = "ssr"))]
 use std::rc::Rc;
-#[cfg(not(feature = "ssr"))]
-use send_wrapper::SendWrapper;
-#[cfg(not(feature = "ssr"))]
-use nostr::JsonUtil;
-#[cfg(not(feature = "ssr"))]
-use base64::Engine as _;
-#[cfg(not(feature = "ssr"))]
-use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
 #[cfg(not(feature = "ssr"))]
 use wasm_bindgen::prelude::*;
 #[cfg(not(feature = "ssr"))]
@@ -48,12 +50,18 @@ extern "C" {
 
 /// Handle to an authenticated NIP-07 browser extension session.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Nip07Handle {
+    /// The authenticated user's public key.
     pub public_key: PublicKey,
 }
 
 impl Nip07Handle {
     /// Request the public key from the browser extension.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when called with SSR features or when getting the public key fails.
     pub async fn get_public_key() -> Result<Self, NostrAuthError> {
         #[cfg(feature = "ssr")]
         return Err(NostrAuthError::ExtensionNotFound);
@@ -65,9 +73,9 @@ impl Nip07Handle {
                     e.as_string().unwrap_or_else(|| "unknown error".into()),
                 )
             })?;
-            let hex = js_pk
-                .as_string()
-                .ok_or_else(|| NostrAuthError::ExtensionRejected("expected string pubkey".into()))?;
+            let hex = js_pk.as_string().ok_or_else(|| {
+                NostrAuthError::ExtensionRejected("expected string pubkey".into())
+            })?;
             let pk = PublicKey::from_hex(&hex)
                 .map_err(|e| NostrAuthError::InvalidPublicKey(e.to_string()))?;
             Ok(Self { public_key: pk })
@@ -75,11 +83,17 @@ impl Nip07Handle {
     }
 
     /// Sign a Nostr event via the extension.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when called with SSR features or when signing fails.
     pub async fn sign_event(&self, event_json: &str) -> Result<String, NostrAuthError> {
         #[cfg(feature = "ssr")]
         {
             let _ = event_json;
-            return Err(NostrAuthError::SigningFailed("not available on server".into()));
+            Err(NostrAuthError::SigningFailed(
+                "not available on server".into(),
+            ))
         }
 
         #[cfg(not(feature = "ssr"))]
@@ -91,11 +105,17 @@ impl Nip07Handle {
             })?;
             js_sys::JSON::stringify(&signed)
                 .map(|s| s.as_string().unwrap_or_default())
-                .map_err(|_| NostrAuthError::SigningFailed("could not stringify signed event".into()))
+                .map_err(|_| {
+                    NostrAuthError::SigningFailed("could not stringify signed event".into())
+                })
         }
     }
 
     /// NIP-44 encrypt via extension.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when called with SSR features or when nip44 encryption fails.
     pub async fn nip44_encrypt(
         &self,
         recipient_hex: &str,
@@ -104,7 +124,9 @@ impl Nip07Handle {
         #[cfg(feature = "ssr")]
         {
             let _ = (recipient_hex, plaintext);
-            return Err(NostrAuthError::SigningFailed("not available on server".into()));
+            Err(NostrAuthError::SigningFailed(
+                "not available on server".into(),
+            ))
         }
 
         #[cfg(not(feature = "ssr"))]
@@ -122,6 +144,10 @@ impl Nip07Handle {
     }
 
     /// NIP-44 decrypt via extension.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when called with SSR features or when nip44 decryption fails.
     pub async fn nip44_decrypt(
         &self,
         sender_hex: &str,
@@ -130,7 +156,9 @@ impl Nip07Handle {
         #[cfg(feature = "ssr")]
         {
             let _ = (sender_hex, ciphertext);
-            return Err(NostrAuthError::SigningFailed("not available on server".into()));
+            Err(NostrAuthError::SigningFailed(
+                "not available on server".into(),
+            ))
         }
 
         #[cfg(not(feature = "ssr"))]
@@ -225,6 +253,7 @@ type PendingMap = Rc<RefCell<HashMap<String, Box<dyn Fn(Result<String, String>)>
 #[derive(Clone)]
 #[allow(dead_code)] // fields used only in non-ssr code paths
 pub struct BunkerSession {
+    /// The authenticated user's public key.
     pub public_key: PublicKey,
     /// Stored for session restore
     pub bunker_uri: String,
@@ -232,9 +261,11 @@ pub struct BunkerSession {
     timeout_secs: u32,
     /// Ephemeral client keypair — stays in memory
     client_keys: Keys,
+    /// Remote signer's public key.
     remote_pubkey: PublicKey,
+    /// WebSocket relay URL.
     relay_url: String,
-    /// Persistent WebSocket — lazily opened on first sign_event call, reused thereafter.
+    /// Persistent WebSocket — lazily opened on first `sign_event` call, reused thereafter.
     #[cfg(not(feature = "ssr"))]
     ws: SendWrapper<Rc<RefCell<Option<web_sys::WebSocket>>>>,
     /// Pending RPC callbacks keyed by request ID.
@@ -244,11 +275,17 @@ pub struct BunkerSession {
 
 impl BunkerSession {
     /// Establish a NIP-46 connection from a `bunker://` or `nostrconnect://` URI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when called with SSR features or when connection fails.
     pub async fn connect(uri: &str, timeout_secs: u32) -> Result<Self, NostrAuthError> {
         #[cfg(feature = "ssr")]
         {
             let _ = (uri, timeout_secs);
-            return Err(NostrAuthError::BunkerConnectionFailed("not available on server".into()));
+            Err(NostrAuthError::BunkerConnectionFailed(
+                "not available on server".into(),
+            ))
         }
 
         #[cfg(not(feature = "ssr"))]
@@ -325,14 +362,20 @@ impl BunkerSession {
         }
     }
 
-    /// Send a NIP-46 sign_event request to the remote signer.
+    /// Send a NIP-46 `sign_event` request to the remote signer.
     ///
     /// Reuses the persistent WebSocket if it is open; reconnects automatically if not.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when called with SSR features or when signing fails..
     pub async fn sign_event(&self, event_json: &str) -> Result<String, NostrAuthError> {
         #[cfg(feature = "ssr")]
         {
             let _ = event_json;
-            return Err(NostrAuthError::SigningFailed("not available on server".into()));
+            Err(NostrAuthError::SigningFailed(
+                "not available on server".into(),
+            ))
         }
 
         #[cfg(not(feature = "ssr"))]
@@ -353,13 +396,17 @@ impl BunkerSession {
             let v: serde_json::Value = serde_json::from_str(&result_json)
                 .map_err(|e| NostrAuthError::SigningFailed(e.to_string()))?;
             v.as_str()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .or_else(|| Some(result_json.clone()))
                 .ok_or_else(|| NostrAuthError::SigningFailed("invalid sign_event response".into()))
         }
     }
 
     /// NIP-44 encrypt via the remote signer (NIP-46 `nip44_encrypt` method).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when called with SSR features or when nip44 decryption fails.
     pub async fn nip44_encrypt(
         &self,
         recipient_hex: &str,
@@ -368,7 +415,9 @@ impl BunkerSession {
         #[cfg(feature = "ssr")]
         {
             let _ = (recipient_hex, plaintext);
-            return Err(NostrAuthError::SigningFailed("not available on server".into()));
+            Err(NostrAuthError::SigningFailed(
+                "not available on server".into(),
+            ))
         }
 
         #[cfg(not(feature = "ssr"))]
@@ -386,12 +435,18 @@ impl BunkerSession {
             let v: serde_json::Value = serde_json::from_str(&result_json)
                 .map_err(|e| NostrAuthError::SigningFailed(e.to_string()))?;
             v.as_str()
-                .map(|s| s.to_string())
-                .ok_or_else(|| NostrAuthError::SigningFailed("invalid nip44_encrypt response".into()))
+                .map(std::string::ToString::to_string)
+                .ok_or_else(|| {
+                    NostrAuthError::SigningFailed("invalid nip44_encrypt response".into())
+                })
         }
     }
 
     /// NIP-44 decrypt via the remote signer (NIP-46 `nip44_decrypt` method).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when called with SSR features or when nip44 decryption fails.
     pub async fn nip44_decrypt(
         &self,
         sender_hex: &str,
@@ -400,7 +455,9 @@ impl BunkerSession {
         #[cfg(feature = "ssr")]
         {
             let _ = (sender_hex, ciphertext);
-            return Err(NostrAuthError::SigningFailed("not available on server".into()));
+            Err(NostrAuthError::SigningFailed(
+                "not available on server".into(),
+            ))
         }
 
         #[cfg(not(feature = "ssr"))]
@@ -418,8 +475,10 @@ impl BunkerSession {
             let v: serde_json::Value = serde_json::from_str(&result_json)
                 .map_err(|e| NostrAuthError::SigningFailed(e.to_string()))?;
             v.as_str()
-                .map(|s| s.to_string())
-                .ok_or_else(|| NostrAuthError::SigningFailed("invalid nip44_decrypt response".into()))
+                .map(std::string::ToString::to_string)
+                .ok_or_else(|| {
+                    NostrAuthError::SigningFailed("invalid nip44_decrypt response".into())
+                })
         }
     }
 
@@ -428,10 +487,10 @@ impl BunkerSession {
     #[cfg(not(feature = "ssr"))]
     async fn ensure_ws(&self) -> Result<web_sys::WebSocket, NostrAuthError> {
         // Check if we have an open WS already
-        if let Some(ws) = self.ws.borrow().as_ref() {
-            if ws.ready_state() == web_sys::WebSocket::OPEN {
-                return Ok(ws.clone());
-            }
+        if let Some(ws) = self.ws.borrow().as_ref()
+            && ws.ready_state() == web_sys::WebSocket::OPEN
+        {
+            return Ok(ws.clone());
         }
 
         // Open a new persistent WS
@@ -440,7 +499,12 @@ impl BunkerSession {
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
         // Set up the persistent message handler referencing our pending map
-        setup_persistent_message_handler(&ws, &*self.pending, &self.client_keys, &self.remote_pubkey);
+        setup_persistent_message_handler(
+            &ws,
+            &self.pending,
+            &self.client_keys,
+            &self.remote_pubkey,
+        );
 
         // Wait for open, then send REQ subscription
         let client_pk_hex = self.client_keys.public_key().to_hex();
@@ -463,7 +527,10 @@ impl BunkerSession {
 
         let on_error_open = Closure::<dyn FnMut(_)>::new(move |_: web_sys::ErrorEvent| {
             if let Some(f) = &open_reject {
-                let _ = f.call1(&JsValue::UNDEFINED, &JsValue::from_str("WebSocket error during reconnect"));
+                let _ = f.call1(
+                    &JsValue::UNDEFINED,
+                    &JsValue::from_str("WebSocket error during reconnect"),
+                );
             }
         });
 
@@ -524,17 +591,15 @@ impl BunkerSession {
 
         self.pending.borrow_mut().insert(
             req_id_owned,
-            Box::new(move |result: Result<String, String>| {
-                match result {
-                    Ok(v) => {
-                        if let Some(f) = &resolve_fn {
-                            let _ = f.call1(&JsValue::UNDEFINED, &JsValue::from_str(&v));
-                        }
+            Box::new(move |result: Result<String, String>| match result {
+                Ok(v) => {
+                    if let Some(f) = &resolve_fn {
+                        let _ = f.call1(&JsValue::UNDEFINED, &JsValue::from_str(&v));
                     }
-                    Err(e) => {
-                        if let Some(f) = &reject_fn {
-                            let _ = f.call1(&JsValue::UNDEFINED, &JsValue::from_str(&e));
-                        }
+                }
+                Err(e) => {
+                    if let Some(f) = &reject_fn {
+                        let _ = f.call1(&JsValue::UNDEFINED, &JsValue::from_str(&e));
                     }
                 }
             }),
@@ -585,7 +650,9 @@ fn setup_persistent_message_handler(
     let remote_hex = remote_pubkey.to_hex();
 
     let on_message = Closure::<dyn FnMut(_)>::new(move |e: web_sys::MessageEvent| {
-        let Some(data) = e.data().as_string() else { return; };
+        let Some(data) = e.data().as_string() else {
+            return;
+        };
         let msg: serde_json::Value = match serde_json::from_str(&data) {
             Ok(v) => v,
             Err(_) => return,
@@ -614,7 +681,9 @@ fn setup_persistent_message_handler(
             Ok(v) => v,
             Err(_) => return,
         };
-        let Some(req_id) = resp["id"].as_str() else { return; };
+        let Some(req_id) = resp["id"].as_str() else {
+            return;
+        };
 
         let cb = pending_clone.borrow_mut().remove(req_id);
         if let Some(cb) = cb {
@@ -650,7 +719,7 @@ fn make_rpc_promise() -> (Promise, Option<js_sys::Function>, Option<js_sys::Func
 /// Create a Promise that rejects with `"timeout"` after `timeout_secs` seconds.
 #[cfg(not(feature = "ssr"))]
 fn make_timeout_promise(timeout_secs: u32) -> Promise {
-    let timeout_ms = (timeout_secs as f64) * 1000.0;
+    let timeout_ms = f64::from(timeout_secs) * 1000.0;
     Promise::new(&mut |_resolve, reject| {
         let cb = Closure::once(move || {
             let _ = reject.call1(&JsValue::UNDEFINED, &JsValue::from_str("timeout"));
@@ -697,14 +766,20 @@ async fn websocket_connect_handshake(
 
     if pk_hex == "ack" || pk_hex.is_empty() {
         // Some bunkers ack without returning the pubkey — do a get_public_key call
-        return get_bunker_public_key(relay_url, client_pubkey_hex, remote_pubkey_hex, client_keys, timeout_secs)
-            .await;
+        return get_bunker_public_key(
+            relay_url,
+            client_pubkey_hex,
+            remote_pubkey_hex,
+            client_keys,
+            timeout_secs,
+        )
+        .await;
     }
 
     PublicKey::from_hex(pk_hex).map_err(|e| NostrAuthError::InvalidPublicKey(e.to_string()))
 }
 
-/// Minimal get_public_key RPC call to retrieve the remote signer's pubkey after connect.
+/// Minimal `get_public_key` RPC call to retrieve the remote signer's pubkey after connect.
 #[cfg(not(feature = "ssr"))]
 async fn get_bunker_public_key(
     relay_url: &str,
@@ -805,20 +880,30 @@ async fn websocket_one_shot_rpc(
 
     // On message: decrypt and resolve if this is our response
     let on_message = Closure::<dyn FnMut(_)>::new(move |e: web_sys::MessageEvent| {
-        let Some(data) = e.data().as_string() else { return; };
+        let Some(data) = e.data().as_string() else {
+            return;
+        };
         let msg: serde_json::Value = match serde_json::from_str(&data) {
             Ok(v) => v,
             Err(_) => return,
         };
-        if msg[0].as_str() != Some("EVENT") { return; }
+        if msg[0].as_str() != Some("EVENT") {
+            return;
+        }
         let event_obj = &msg[2];
-        if event_obj["kind"].as_u64() != Some(24133) { return; }
-        if event_obj["pubkey"].as_str().unwrap_or_default() != remote_pubkey_hex_owned { return; }
+        if event_obj["kind"].as_u64() != Some(24133) {
+            return;
+        }
+        if event_obj["pubkey"].as_str().unwrap_or_default() != remote_pubkey_hex_owned {
+            return;
+        }
         let ciphertext = match event_obj["content"].as_str() {
             Some(s) => s.to_string(),
             None => return,
         };
-        let Ok(remote_pk) = PublicKey::from_hex(&remote_pubkey_hex_owned) else { return; };
+        let Ok(remote_pk) = PublicKey::from_hex(&remote_pubkey_hex_owned) else {
+            return;
+        };
         let Ok(plaintext) =
             nostr::nips::nip44::decrypt(client_keys_clone.secret_key(), &remote_pk, &ciphertext)
         else {
@@ -828,7 +913,9 @@ async fn websocket_one_shot_rpc(
             Ok(v) => v,
             Err(_) => return,
         };
-        if resp["id"].as_str() != Some(&req_id_owned) { return; }
+        if resp["id"].as_str() != Some(&req_id_owned) {
+            return;
+        }
         if let Some(err) = resp["error"].as_str().filter(|s| !s.is_empty()) {
             if let Some(f) = &reject_for_msg {
                 let _ = f.call1(&JsValue::UNDEFINED, &JsValue::from_str(err));
@@ -888,7 +975,10 @@ async fn websocket_one_shot_rpc(
 /// Generate a cryptographically random request ID using `window.crypto.getRandomValues`.
 #[cfg(not(feature = "ssr"))]
 fn generate_request_id() -> String {
-    random_bytes(8).iter().map(|b| format!("{b:02x}")).collect()
+    random_bytes(8).iter().fold(String::new(), |mut acc, b| {
+        let _ = write!(acc, "{b:02X}");
+        acc
+    })
 }
 
 // ─────────────────────────────────────────────
@@ -901,13 +991,16 @@ fn generate_request_id() -> String {
 const PRF_SALT: &[u8] = b"nostr-key-v1";
 
 /// An active passkey session. The secret key is in-memory only; derived anew on each login.
+///
 /// The passkey (and by extension, your Nostr identity) syncs via iCloud Keychain on Apple
 /// devices, or Google Password Manager / Windows Hello on other platforms.
 #[derive(Clone)]
 pub struct PasskeySession {
+    /// The authenticated user's public key.
     pub public_key: PublicKey,
+    /// In-memory-only secp256k1 secret key derived from the WebAuthn PRF output.
     secret_key: SecretKey,
-    /// base64url-encoded credential ID — stored in PersistedSession for restore
+    /// base64url-encoded credential ID — stored in `PersistedSession` for restore
     pub credential_id: Vec<u8>,
 }
 
@@ -916,11 +1009,16 @@ impl PasskeySession {
     ///
     /// On macOS/iOS: triggers Touch ID / Face ID sheet. The resulting passkey
     /// syncs via iCloud Keychain to all the user's Apple devices.
+    /// # Errors
+    ///
+    /// Returns an error if the passkey creation fails.
     pub async fn create(rp_id: &str, rp_name: &str) -> Result<Self, NostrAuthError> {
         #[cfg(feature = "ssr")]
         {
             let _ = (rp_id, rp_name);
-            return Err(NostrAuthError::PasskeyFailed("not available on server".into()));
+            Err(NostrAuthError::PasskeyFailed(
+                "not available on server".into(),
+            ))
         }
 
         #[cfg(not(feature = "ssr"))]
@@ -986,10 +1084,10 @@ impl PasskeySession {
 
             let credential = JsFuture::from(promise).await.map_err(|e| {
                 web_sys::console::error_1(&e);
-                NostrAuthError::PasskeyFailed(js_err_msg(e))
+                NostrAuthError::PasskeyFailed(js_err_msg(&e))
             })?;
 
-            Self::derive_from_credential(credential)
+            Self::derive_from_credential(&credential)
         }
     }
 
@@ -997,11 +1095,17 @@ impl PasskeySession {
     ///
     /// On macOS/iOS: triggers Touch ID / Face ID sheet.
     /// The same passkey + same PRF salt always produces the same Nostr key (deterministic).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when called with SSR features or when passkey authentication fails.
     pub async fn authenticate(credential_id: Vec<u8>) -> Result<Self, NostrAuthError> {
         #[cfg(feature = "ssr")]
         {
             let _ = credential_id;
-            return Err(NostrAuthError::PasskeyFailed("not available on server".into()));
+            Err(NostrAuthError::PasskeyFailed(
+                "not available on server".into(),
+            ))
         }
 
         #[cfg(not(feature = "ssr"))]
@@ -1047,10 +1151,10 @@ impl PasskeySession {
 
             let credential = JsFuture::from(promise).await.map_err(|e| {
                 web_sys::console::error_1(&e);
-                NostrAuthError::PasskeyFailed(js_err_msg(e))
+                NostrAuthError::PasskeyFailed(js_err_msg(&e))
             })?;
 
-            Self::derive_from_credential(credential)
+            Self::derive_from_credential(&credential)
         }
     }
 
@@ -1059,19 +1163,19 @@ impl PasskeySession {
     /// Flow (mirrors Roadflare iOS):
     ///   PRF output (32 bytes) → SHA-256 → secp256k1 private key
     #[cfg(not(feature = "ssr"))]
-    fn derive_from_credential(credential: JsValue) -> Result<Self, NostrAuthError> {
+    fn derive_from_credential(credential: &JsValue) -> Result<Self, NostrAuthError> {
         // Extract credential ID
-        let raw_id = Reflect::get(&credential, &"rawId".into())
+        let raw_id = Reflect::get(credential, &"rawId".into())
             .map_err(|_| NostrAuthError::PasskeyFailed("no rawId".into()))?;
         let cred_id_u8 = Uint8Array::new(&raw_id);
         let credential_id = cred_id_u8.to_vec();
 
         // Navigate: credential.getClientExtensionResults().prf.results.first
-        let get_exts = Reflect::get(&credential, &"getClientExtensionResults".into())
+        let get_exts = Reflect::get(credential, &"getClientExtensionResults".into())
             .and_then(|f| {
                 f.dyn_ref::<js_sys::Function>()
                     .ok_or(JsValue::UNDEFINED)?
-                    .call0(&credential)
+                    .call0(credential)
             })
             .map_err(|_| {
                 NostrAuthError::PasskeyFailed("getClientExtensionResults failed".into())
@@ -1091,9 +1195,10 @@ impl PasskeySession {
         let prf_bytes = Uint8Array::new(&first).to_vec();
 
         if prf_bytes.len() != 32 {
-            return Err(NostrAuthError::PasskeyFailed(
-                format!("PRF output must be 32 bytes, got {}", prf_bytes.len()).into(),
-            ));
+            return Err(NostrAuthError::PasskeyFailed(format!(
+                "PRF output must be 32 bytes, got {}",
+                prf_bytes.len()
+            )));
         }
 
         // SHA-256 of the PRF output → secp256k1 private key (deterministic, Roadflare pattern)
@@ -1113,6 +1218,10 @@ impl PasskeySession {
     }
 
     /// Sign a Nostr event using the in-memory derived key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if signing fails.
     pub fn sign_event(&self, event_json: &str) -> Result<String, NostrAuthError> {
         let unsigned: nostr::UnsignedEvent = serde_json::from_str(event_json)
             .map_err(|e| NostrAuthError::Serialization(e.to_string()))?;
@@ -1127,7 +1236,7 @@ impl PasskeySession {
 /// Compute SHA-256 synchronously (using the `nostr` crate's transitive dep).
 #[cfg(not(feature = "ssr"))]
 fn sha256_bytes(input: &[u8]) -> [u8; 32] {
-    use nostr::hashes::{sha256, Hash};
+    use nostr::hashes::{Hash, sha256};
     let mut engine = sha256::Hash::engine();
     nostr::hashes::HashEngine::input(&mut engine, input);
     let hash = sha256::Hash::from_engine(engine);
@@ -1135,6 +1244,7 @@ fn sha256_bytes(input: &[u8]) -> [u8; 32] {
 }
 
 #[cfg(not(feature = "ssr"))]
+#[allow(clippy::cast_possible_truncation)]
 fn random_bytes(len: usize) -> Vec<u8> {
     let window = web_sys::window().unwrap();
     let crypto = window.crypto().unwrap();
@@ -1149,10 +1259,10 @@ fn random_bytes(len: usize) -> Vec<u8> {
 
 /// Extract a human-readable message from any JS error value.
 #[cfg(not(feature = "ssr"))]
-fn js_err_msg(e: JsValue) -> String {
+fn js_err_msg(e: &JsValue) -> String {
     e.as_string()
         .or_else(|| {
-            Reflect::get(&e, &"message".into())
+            Reflect::get(e, &"message".into())
                 .ok()
                 .and_then(|v| v.as_string())
         })
@@ -1175,11 +1285,13 @@ fn set_str(obj: &Object, key: &str, val: &str) {
 
 /// Read-only access — public key only, no signing capability.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ReadOnlyHandle {
+    /// The authenticated user's public key.
     pub public_key: PublicKey,
 }
 
-impl std::str::FromStr for ReadOnlyHandle {
+impl core::str::FromStr for ReadOnlyHandle {
     type Err = NostrAuthError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
@@ -1190,10 +1302,12 @@ impl std::str::FromStr for ReadOnlyHandle {
         if let Ok(pk) = PublicKey::from_bech32(input) {
             return Ok(Self { public_key: pk });
         }
-        if input.starts_with("nprofile") {
-            if let Ok(profile) = nostr::nips::nip19::Nip19Profile::from_bech32(input) {
-                return Ok(Self { public_key: profile.public_key });
-            }
+        if input.starts_with("nprofile")
+            && let Ok(profile) = nostr::nips::nip19::Nip19Profile::from_bech32(input)
+        {
+            return Ok(Self {
+                public_key: profile.public_key,
+            });
         }
         Err(NostrAuthError::InvalidPublicKey(
             "Expected npub1..., nprofile1..., or 64-char hex public key".into(),
@@ -1212,7 +1326,9 @@ impl std::str::FromStr for ReadOnlyHandle {
 /// `ZeroizeOnDrop` internally, so each copy is zeroed when dropped.
 #[derive(Clone)]
 pub struct RawKeySession {
+    /// The authenticated user's public key.
     pub public_key: PublicKey,
+    /// In-memory secp256k1 secret key; zeroed on drop via `ZeroizeOnDrop`.
     secret_key: SecretKey,
 }
 
@@ -1221,13 +1337,17 @@ impl RawKeySession {
     ///
     /// scrypt derivation is CPU-intensive — call this inside `spawn_local` to avoid
     /// blocking the browser's main thread while the spinner shows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decrypting fails.
     pub fn from_ncryptsec(ncryptsec: &str, password: &str) -> Result<Self, NostrAuthError> {
         let encrypted = nostr::nips::nip49::EncryptedSecretKey::from_bech32(ncryptsec)
             .map_err(|e| NostrAuthError::InvalidNcryptsec(e.to_string()))?;
 
         let secret_key = encrypted
             .decrypt(password)
-            .map_err(|_| NostrAuthError::WrongPassword)?;
+            .map_err(|_e| NostrAuthError::WrongPassword)?;
 
         let keys = Keys::new(secret_key.clone());
         Ok(Self {
@@ -1239,6 +1359,10 @@ impl RawKeySession {
     /// Parse a raw `nsec1...` bech32 or 64-char hex private key.
     ///
     /// Only available with the `insecure_nsec_input` feature flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when parsing nsec fails.
     #[cfg(feature = "insecure_nsec_input")]
     pub fn from_nsec_or_hex(input: &str) -> Result<Self, NostrAuthError> {
         let input = input.trim();
@@ -1259,6 +1383,10 @@ impl RawKeySession {
     }
 
     /// Sign a Nostr event with the in-memory key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if signing fails.
     pub fn sign_event(&self, event_json: &str) -> Result<String, NostrAuthError> {
         let unsigned: nostr::UnsignedEvent = serde_json::from_str(event_json)
             .map_err(|e| NostrAuthError::Serialization(e.to_string()))?;

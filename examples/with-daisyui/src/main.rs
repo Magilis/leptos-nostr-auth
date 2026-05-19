@@ -15,7 +15,7 @@ fn App() -> impl IntoView {
     let config = NostrAuthConfig {
         persist_session: true,
         rp_id: Some("localhost".into()),
-        rp_name: "My Nostr App".to_string(),
+        rp_name: "My Nostr App".to_owned(),
         ..Default::default()
     };
 
@@ -69,7 +69,7 @@ fn HomePage() -> impl IntoView {
                                 "Connected"
                             </span>
                             <span class="text-xs opacity-60">
-                                {move || auth.auth.get().map(|a| a.method_name()).unwrap_or("")}
+                                {move || auth.auth.get().map_or("", |a| a.method_name())}
                             </span>
                         </div>
                         <div class="bg-base-300 rounded-lg p-3 font-mono text-xs break-all">
@@ -78,7 +78,7 @@ fn HomePage() -> impl IntoView {
 
                         // Signing demo
                         <Show
-                            when=move || auth.auth.get().map(|a| a.can_sign()).unwrap_or(false)
+                            when=move || auth.auth.get().is_some_and(|a| a.can_sign())
                             fallback=|| view! {
                                 <p class="text-xs opacity-50">"(Read-only — cannot sign)"</p>
                             }

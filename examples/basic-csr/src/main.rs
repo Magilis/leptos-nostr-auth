@@ -57,7 +57,7 @@ fn HomePage() -> impl IntoView {
                 <p>
                     "Logged in via: "
                     <strong>
-                        {move || auth.auth.get().map(|a| a.method_name()).unwrap_or("")}
+                        {move || auth.auth.get().map_or("", |a| a.method_name())}
                     </strong>
                 </p>
                 <p>
@@ -69,7 +69,7 @@ fn HomePage() -> impl IntoView {
 
                 // Signing demo — only available for non-read-only sessions
                 <Show
-                    when=move || auth.auth.get().map(|a| a.can_sign()).unwrap_or(false)
+                    when=move || auth.auth.get().is_some_and(|a| a.can_sign())
                     fallback=|| view! { <p class="meta">"(Read-only — cannot sign)"</p> }
                 >
                     <button

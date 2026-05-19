@@ -1,3 +1,5 @@
+// #[component] generates exhaustive props structs we cannot control.
+#![allow(clippy::exhaustive_structs)]
 use leptos::prelude::*;
 use leptos_nostr_auth::{use_nostr_auth, NostrAuthConfig, NostrAuthProvider};
 
@@ -17,7 +19,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <title>"Nostr Auth — Axum SSR + daisyUI"</title>
-                <HydrationScripts options=options.clone()/>
+                <HydrationScripts options/>
                 <link rel="stylesheet" href="/pkg/with-axum-daisyui.css"/>
             </head>
             <body>
@@ -32,7 +34,7 @@ pub fn App() -> impl IntoView {
     let config = NostrAuthConfig {
         persist_session: true,
         rp_id: Some("localhost".into()),
-        rp_name: "My Nostr App".to_string(),
+        rp_name: "My Nostr App".to_owned(),
         ..Default::default()
     };
     view! {
@@ -86,7 +88,7 @@ fn HomePage() -> impl IntoView {
                                 "Connected"
                             </span>
                             <span class="text-xs opacity-60">
-                                {move || auth.auth.get().map(|a| a.method_name()).unwrap_or("")}
+                                {move || auth.auth.get().map_or("", |a| a.method_name())}
                             </span>
                         </div>
                         <div class="bg-base-300 rounded-lg p-3 font-mono text-xs break-all">

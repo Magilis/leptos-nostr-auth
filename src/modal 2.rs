@@ -7,7 +7,7 @@ use leptos_use::{use_event_listener, use_window};
 #[cfg(not(feature = "ssr"))]
 use wasm_bindgen_futures::spawn_local;
 
-use crate::platform::{Os, Platform};
+use crate::platform::Platform;
 #[cfg(not(feature = "ssr"))]
 use crate::signers::{BunkerSession, Nip07Handle, PasskeySession};
 // RawKeySession: used in spawn_local (non-ssr) and in StepRawNsec sync code (insecure_nsec_input)
@@ -309,7 +309,7 @@ fn StepMethodSelect(
         <div data-nostr-methods="" class=if cfg!(feature = "daisyui") { "flex flex-col gap-2" } else { "" }>
 
             // ── Apple: passkey first ──────────────────────────────────────────
-            <Show when=move || matches!(platform.get().os, Os::Apple) && show_passkey() fallback=|| ()>
+            <Show when=move || platform.get().is_apple && show_passkey() fallback=|| ()>
                 <MethodButton
                     icon=icon_passkey
                     title="Passkey"
@@ -321,7 +321,7 @@ fn StepMethodSelect(
 
             // ── Extension: non-Apple (badge = Recommended) ───────────────────
             // Two separate Shows so the badge value is stable per variant.
-            <Show when=move || { let p = platform.get(); !matches!(p.os, Os::Apple) && p.has_nostr_extension && extension_allowed } fallback=|| ()>
+            <Show when=move || { let p = platform.get(); !p.is_apple && p.has_nostr_extension && extension_allowed } fallback=|| ()>
                 <MethodButton
                     icon=icon_extension
                     title="Browser Extension"
@@ -332,7 +332,7 @@ fn StepMethodSelect(
             </Show>
 
             // ── Extension: Apple (no badge) ───────────────────────────────────
-            <Show when=move || { let p = platform.get(); matches!(p.os, Os::Apple) && p.has_nostr_extension && extension_allowed } fallback=|| ()>
+            <Show when=move || { let p = platform.get(); p.is_apple && p.has_nostr_extension && extension_allowed } fallback=|| ()>
                 <MethodButton
                     icon=icon_extension
                     title="Browser Extension"
@@ -343,7 +343,7 @@ fn StepMethodSelect(
             </Show>
 
             // ── Android: Amber hint before generic bunker ─────────────────────
-            <Show when=move || matches!(platform.get().os, Os::Android) && show_bunker fallback=|| ()>
+            <Show when=move || platform.get().is_android && show_bunker fallback=|| ()>
                 <MethodButton
                     icon=icon_amber
                     title="Amber"
@@ -365,7 +365,7 @@ fn StepMethodSelect(
             </Show>
 
             // ── Non-Apple: passkey after bunker ───────────────────────────────
-            <Show when=move || !matches!(platform.get().os, Os::Apple) && show_passkey() fallback=|| ()>
+            <Show when=move || !platform.get().is_apple && show_passkey() fallback=|| ()>
                 <MethodButton
                     icon=icon_passkey
                     title="Passkey"
@@ -633,7 +633,7 @@ fn StepBunker(
             </p>
 
             // Amber tip — Android only
-            <Show when=move || matches!(platform.get().os, Os::Android) fallback=|| ()>
+            <Show when=move || platform.get().is_android fallback=|| ()>
                 <div
                     data-nostr-tip=""
                     class=if cfg!(feature = "daisyui") { "alert text-sm py-2" } else { "" }

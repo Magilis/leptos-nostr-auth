@@ -6,10 +6,10 @@ use crate::types::{NostrAuthError, PersistedSession};
 /// Save/load/clear are handled by the `use_local_storage` hook in `NostrAuthProvider`.
 ///
 /// Each method has different restore semantics:
-/// - Extension: verify window.nostr still returns the same pubkey
-/// - Bunker: re-establish WebSocket connection using stored bunker URI
-/// - Passkey: call navigator.credentials.get() → PRF → rederive key
-/// - ReadOnly: restore directly from hex pubkey (no re-auth needed)
+/// - `Extension`: verify window.nostr still returns the same pubkey
+/// - `Bunker`: re-establish WebSocket connection using stored bunker URI
+/// - `Passkey`: call `navigator.credentials.get()` → PRF → rederive key
+/// - `ReadOnly`: restore directly from hex pubkey (no re-auth needed)
 #[cfg(not(feature = "ssr"))]
 pub async fn restore_session(
     session: &PersistedSession,
@@ -45,13 +45,12 @@ pub async fn restore_session(
                     .as_deref()
                     .ok_or_else(|| NostrAuthError::InvalidBunkerUri("no URI stored".into()))?;
                 let session = crate::signers::BunkerSession::connect(uri, 30).await?;
-                Ok(crate::signers::AuthResult::Bunker(session))
+                Ok(crate::signers::AuthResult::Bunker(Box::new(session)))
             }
             PersistedMethod::Passkey => {
-                let cred_id_b64 = session
-                    .passkey_credential_id
-                    .as_deref()
-                    .ok_or_else(|| NostrAuthError::PasskeyFailed("no credential ID stored".into()))?;
+                let cred_id_b64 = session.passkey_credential_id.as_deref().ok_or_else(|| {
+                    NostrAuthError::PasskeyFailed("no credential ID stored".into())
+                })?;
                 let cred_id = base64::Engine::decode(
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
                     cred_id_b64,
@@ -65,11 +64,11 @@ pub async fn restore_session(
                 }
                 Ok(crate::signers::AuthResult::Passkey(ps))
             }
-            PersistedMethod::ReadOnly => {
-                Ok(crate::signers::AuthResult::ReadOnly(
-                    crate::signers::ReadOnlyHandle { public_key: stored_pk },
-                ))
-            }
+            PersistedMethod::ReadOnly => Ok(crate::signers::AuthResult::ReadOnly(
+                crate::signers::ReadOnlyHandle {
+                    public_key: stored_pk,
+                },
+            )),
         }
     }
 }
