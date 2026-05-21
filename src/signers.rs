@@ -1121,25 +1121,36 @@ impl PasskeySession {
             set(&pk_opts, "challenge", &challenge);
             set_str(&pk_opts, "userVerification", "required");
 
-            // Allow only the stored credential
-            let cred_descriptor = Object::new();
-            set_str(&cred_descriptor, "type", "public-key");
-            let cred_id_u8 = Uint8Array::from(credential_id.as_slice());
-            set(&cred_descriptor, "id", &cred_id_u8);
-            let allow_creds = Array::of1(&cred_descriptor);
-            set(&pk_opts, "allowCredentials", &allow_creds);
-
-            // PRF extension — evalByCredential keyed by base64url credential ID
-            let cred_id_b64 =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&credential_id);
             let extensions = Object::new();
             let prf = Object::new();
-            let eval_by_cred = Object::new();
+
+            // Always include eval — required by browsers that don't support evalByCredential
+            // (Safari ≤16.x, older Firefox). Same salt → same PRF output as evalByCredential.
             let prf_eval = Object::new();
             let salt_u8 = Uint8Array::from(PRF_SALT);
             Reflect::set(&prf_eval, &"first".into(), &salt_u8).unwrap();
-            Reflect::set(&eval_by_cred, &cred_id_b64.into(), &prf_eval).unwrap();
-            set(&prf, "evalByCredential", &eval_by_cred);
+            set(&prf, "eval", &prf_eval);
+
+            if !credential_id.is_empty() {
+                // Restrict assertion to the stored credential
+                let cred_descriptor = Object::new();
+                set_str(&cred_descriptor, "type", "public-key");
+                let cred_id_u8 = Uint8Array::from(credential_id.as_slice());
+                set(&cred_descriptor, "id", &cred_id_u8);
+                let allow_creds = Array::of1(&cred_descriptor);
+                set(&pk_opts, "allowCredentials", &allow_creds);
+
+                // evalByCredential for spec-compliant browsers that prefer it over eval
+                let cred_id_b64 =
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&credential_id);
+                let eval_by_cred = Object::new();
+                let prf_eval_ebc = Object::new();
+                let salt_u8_ebc = Uint8Array::from(PRF_SALT);
+                Reflect::set(&prf_eval_ebc, &"first".into(), &salt_u8_ebc).unwrap();
+                Reflect::set(&eval_by_cred, &cred_id_b64.into(), &prf_eval_ebc).unwrap();
+                set(&prf, "evalByCredential", &eval_by_cred);
+            }
+
             set(&extensions, "prf", &prf);
             set(&pk_opts, "extensions", &extensions);
 
